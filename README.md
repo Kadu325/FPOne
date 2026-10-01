@@ -117,14 +117,24 @@ Os arquivos do Garage persistem permanentemente nos volumes montados `meta` e `d
 
 ---
 
-### Passo 6: Bootstrap do Primeiro Administrador
-Depois que a aplicação estiver no ar, execute uma única vez o script CLI para conceder privilégios de `ADMIN` ao primeiro colaborador (a partir de sua matrícula de rede/RH):
+### Passo 6: Acesso com o Usuário Master de Gerenciamento Interno
+Para que você possa gerenciar a aplicação imediatamente após o deploy (mesmo antes de sincronizar o Active Directory ou em manutenções internas), a aplicação conta com um **Usuário Master Administrador** pré-configurado:
+
+* **Usuário / Login**: `admin` (ou o valor definido em `MASTER_ADMIN_USERNAME`)
+* **Senha Inicial**: `Admin@FPOne2026!` (ou a senha configurada na variável `MASTER_ADMIN_PASSWORD`)
+* **Perfil**: `ADMIN` (Acesso total com todas as 17 permissões do sistema)
+
+> 💡 **Recomendação de Segurança**: No Easypanel, defina a variável `MASTER_ADMIN_PASSWORD` no serviço `web` com uma senha forte personalizada. O usuário Master é inicializado automaticamente no primeiro login ou pelo script de startup.
+
+---
+
+### Passo 7: (Opcional) Bootstrap de Administrador por Matrícula
+Caso queira promover outro colaborador específico importado da rede/RH a Administrador:
 
 No console do serviço **web**:
 ```bash
 node scripts/admin-bootstrap.js --matricula <MATRICULA_DO_ADMIN>
 ```
-*O script utiliza lock transacional no banco de dados e só pode ser executado se não existir nenhum administrador cadastrado, garantindo conformidade de governança.*
 
 ---
 

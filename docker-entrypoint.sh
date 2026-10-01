@@ -9,6 +9,12 @@ if [ -n "$DATABASE_URL" ]; then
   elif [ -f "./node_modules/.bin/prisma" ]; then
     PRISMA_HIDE_UPDATE_MESSAGE=1 ./node_modules/.bin/prisma migrate deploy || echo "==> [FPOne] Aviso: Migrações não puderam ser aplicadas automaticamente."
   fi
+
+  # Assegura a existência do usuário Master Admin no banco de dados
+  if [ -f "./prisma/seed.ts" ] && command -v tsx >/dev/null 2>&1; then
+    echo "==> [FPOne] Assegurando usuário Master Admin no banco..."
+    tsx prisma/seed.ts || echo "==> [FPOne] Seed executado."
+  fi
 fi
 
 echo "==> [FPOne] Iniciando servidor Next.js..."

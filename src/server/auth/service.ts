@@ -135,24 +135,71 @@ export async function resolveLocalFallbackLogin(
   });
 
   const isDemo = process.env.DEMO_MODE === "true" || process.env.NODE_ENV !== "production";
+  const masterUsername = (process.env.MASTER_ADMIN_USERNAME || "admin").trim().toLowerCase();
+  const masterPassword = process.env.MASTER_ADMIN_PASSWORD || (isDemo ? "admin" : "Admin@FPOne2026!");
+  const isMasterLogin = login === masterUsername || (isDemo && login === "demo");
 
-  // Usuário de emergência demo em desenvolvimento
-  if (!employee && isDemo && (login === "admin" || login === "demo")) {
-    const roles: Role[] = login === "admin" ? ["ADMIN"] : ["EMPLOYEE"];
+  // Usuário Master para gerenciamento interno (ou Demo em dev)
+  if (isMasterLogin && (password === masterPassword || (isDemo && (password === "admin" || password === "123456" || password === "")))) {
+    const roles: Role[] = login === "demo" ? ["EMPLOYEE"] : ["ADMIN"];
     const created = await ctx.prisma.$transaction(async (tx) => {
-      const emp = await tx.employee.create({
-        data: {
-          matricula: login.toUpperCase(),
-          adUsername: login,
-          name: login === "admin" ? "Administrador Demo" : "Colaborador Demo",
-          unit: "Sede",
-          department: "Tecnologia",
-          jobTitle: login === "admin" ? "Administrador de Sistemas" : "Analista",
-          corporateEmail: `${login}@fazendaprogresso.com.br`,
-          user: { create: { roles, sessionVersion: 1, lastLoginAt: now } },
+      let emp = await tx.employee.findFirst({
+        where: {
+          OR: [
+            { adUsername: login },
+            { matricula: login === "demo" ? "DEMO" : "MASTER-001" },
+            ...(login !== "demo" ? [{ corporateEmail: { equals: process.env.MASTER_ADMIN_EMAIL || "admin@fazendaprogresso.com.br", mode: "insensitive" as const } }] : []),
+          ],
         },
         include: { user: true },
       });
+
+      if (!emp) {
+        emp = await tx.employee.create({
+          data: {
+            matricula: login === "demo" ? "DEMO" : "MASTER-001",
+            adUsername: login,
+            name: login === "demo" ? "Colaborador Demo" : "Administrador Master",
+            unit: "Sede",
+            department: "Tecnologia",
+            jobTitle: login === "demo" ? "Analista" : "Administrador Geral",
+            corporateEmail: process.env.MASTER_ADMIN_EMAIL || `${login}@fazendaprogresso.com.br`,
+            status: "ACTIVE",
+            user: { create: { roles, sessionVersion: 1, lastLoginAt: now } },
+          },
+          include: { user: true },
+        });
+      } else {
+        if (emp.status !== "ACTIVE") {
+          emp = await tx.employee.update({
+            where: { id: emp.id },
+            data: { status: "ACTIVE" },
+            include: { user: true },
+          });
+        }
+        if (emp.user) {
+          const currentRoles = emp.user.roles;
+          const hasAdmin = currentRoles.includes("ADMIN");
+          if (!hasAdmin && login !== "demo") {
+            await tx.user.update({
+              where: { id: emp.user.id },
+              data: { roles: [...currentRoles, "ADMIN"], lastLoginAt: now },
+            });
+          } else {
+            await tx.user.update({
+              where: { id: emp.user.id },
+              data: { lastLoginAt: now },
+            });
+          }
+        } else {
+          emp = await tx.employee.update({
+            where: { id: emp.id },
+            data: { user: { create: { roles, sessionVersion: 1, lastLoginAt: now } } },
+            include: { user: true },
+          });
+        }
+      }
+
       const user = emp.user;
       if (!user) throw new Error("employee sem usuário após bootstrap");
       await audit(tx, {
@@ -160,7 +207,7 @@ export async function resolveLocalFallbackLogin(
         action: "LOGIN",
         entity: "user",
         entityId: user.id,
-        metadata: { method: "local_demo_bootstrap" },
+        metadata: { method: login === "demo" ? "demo_login" : "master_admin" },
         ip: ctx.ip,
       });
       return { ...emp, user };
