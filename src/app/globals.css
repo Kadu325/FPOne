@@ -1,0 +1,75 @@
+@import "tailwindcss";
+@config "../../tailwind.config.ts";
+
+@layer base {
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+  body {
+    @apply bg-bg text-brand-ink font-sans antialiased;
+    overflow-x: hidden;
+  }
+  /* Foco visível: 3px brand.blue (§186). */
+  :focus-visible {
+    outline: 3px solid var(--color-brand-blue, #0879c9);
+    outline-offset: 2px;
+    border-radius: 12px;
+  }
+  [hidden] {
+    display: none !important;
+  }
+}
+
+@utility brand-gradient {
+  background-image: linear-gradient(120deg, #86e800, #00b63b 38%, #13bdeb 76%, #0879c9);
+}
+
+/* Texto em degradê: só títulos ≥ 24px ou sobre brand.ink (§186). */
+@utility brand-text {
+  background-image: linear-gradient(100deg, #90f300 0%, #18ce56 38%, #18c5d8 72%, #1a8ddb 100%);
+  -webkit-background-clip: text;
+  background-clip: text;
+  color: transparent;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
+}
+
+/* Item ativo da sidebar (§90): fundo suave, indicador lateral e ícone em degradê da marca. */
+@utility sidebar-active {
+  background: linear-gradient(90deg, rgb(134 232 0 / 0.13), rgb(0 183 177 / 0.07));
+  &::before {
+    content: "";
+    position: absolute;
+    left: -3px;
+    top: 11px;
+    bottom: 11px;
+    width: 4px;
+    border-radius: 999px;
+    background: linear-gradient(180deg, #86e800 0%, #00b63b 45%, #13bdeb 100%);
+  }
+}
+
+@utility sidebar-active-icon {
+  background: linear-gradient(135deg, #00b63b 0%, #00b7b1 55%, #13bdeb 100%);
+  box-shadow: 0 8px 20px rgb(0 182 59 / 0.18);
+}
+
+/* PIN incorreto (Login v2): tremor curto; prefers-reduced-motion já zera a duração acima. */
+@keyframes pin-shake {
+  20% { transform: translateX(-6px); }
+  40% { transform: translateX(6px); }
+  60% { transform: translateX(-4px); }
+  80% { transform: translateX(4px); }
+}
+@utility animate-pin-shake {
+  animation: pin-shake 0.38s;
+}
