@@ -110,7 +110,7 @@ services:
   # 3. Armazenamento de Objetos S3 & Console Visual (MinIO)
   # ----------------------------------------------------------------------------
   minio:
-    image: minio/minio:latest
+    image: ${MINIO_IMAGE:-elestio/minio:latest}
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
     ports:
