@@ -1,18 +1,19 @@
 # FPOne Intranet: Ambiente Completo de Produção para Servidor Debian Linux.
-# Orquestrado via Docker Compose com Traefik v3, MinIO S3, PostgreSQL 16 e Next.js 16 Standalone.
-# Segredos e credenciais vêm do arquivo .env (fora do Git). Ver .env.example.
+# Arquitetura Multi-Subdomínio com Traefik v3, MinIO S3, PostgreSQL 16 e Next.js 16 Standalone.
+# Segredos e subdomínios vêm do arquivo .env (fora do Git). Ver .env.example.
 
 name: fpone
 
 services:
   # ----------------------------------------------------------------------------
-  # 1. Proxy Reverso & Gerenciamento (Traefik v3)
+  # 1. Proxy Reverso & Gerenciamento Multi-Subdomínio (Traefik v3)
   # ----------------------------------------------------------------------------
-  # Único serviço com portas expostas diretamente para a rede externa.
-  # - Roteia tráfego web corporativo para a aplicação Next.js (porta 3000)
-  # - Roteia downloads pré-assinados /<S3_BUCKET>/* para o MinIO (porta 9000)
-  # - Emite e renova certificados SSL/TLS automaticamente via Let's Encrypt
-  # - Fornece Dashboard de Gerenciamento Visual na porta 8080 com autenticação local
+  # Único serviço com portas 80/443 expostas publicamente.
+  # - Roteia subdomínio da Intranet (APP_DOMAIN) -> web:3000
+  # - Roteia subdomínio de Arquivos/S3 (S3_DOMAIN) -> minio:9000
+  # - Roteia subdomínio do Console MinIO (MINIO_CONSOLE_DOMAIN) -> minio:9001
+  # - Roteia subdomínio do Painel Traefik (TRAEFIK_DOMAIN) -> api@internal
+  # - Emite e renova certificados SSL/TLS automaticamente para cada subdomínio via Let's Encrypt
   proxy:
     image: traefik:v3.3
     restart: unless-stopped
@@ -40,13 +41,24 @@ services:
       - traefik-certificates:/letsencrypt
     labels:
       - "traefik.enable=true"
-      # Dashboard administrativo acessível via porta 8080 e via /dashboard/
-      - "traefik.http.routers.traefik-dashboard.rule=PathPrefix(`/dashboard`) || PathPrefix(`/api`)"
-      - "traefik.http.routers.traefik-dashboard.entrypoints=traefik,web,websecure"
-      - "traefik.http.routers.traefik-dashboard.service=api@internal"
-      - "traefik.http.routers.traefik-dashboard.middlewares=traefik-auth"
+      # --- Subdomínio do Traefik Dashboard (HTTP) ---
+      - "traefik.http.routers.traefik-dashboard-http.rule=Host(`${TRAEFIK_DOMAIN:-traefik.localhost}`)"
+      - "traefik.http.routers.traefik-dashboard-http.entrypoints=web"
+      - "traefik.http.routers.traefik-dashboard-http.service=api@internal"
+      - "traefik.http.routers.traefik-dashboard-http.middlewares=traefik-auth"
+      # --- Subdomínio do Traefik Dashboard (HTTPS com SSL) ---
+      - "traefik.http.routers.traefik-dashboard-https.rule=Host(`${TRAEFIK_DOMAIN:-traefik.localhost}`)"
+      - "traefik.http.routers.traefik-dashboard-https.entrypoints=websecure"
+      - "traefik.http.routers.traefik-dashboard-https.tls=true"
+      - "traefik.http.routers.traefik-dashboard-https.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.traefik-dashboard-https.service=api@internal"
+      - "traefik.http.routers.traefik-dashboard-https.middlewares=traefik-auth"
+      # Acesso interno direto pela porta 8080
+      - "traefik.http.routers.traefik-dash-direct.rule=PathPrefix(`/dashboard`) || PathPrefix(`/api`)"
+      - "traefik.http.routers.traefik-dash-direct.entrypoints=traefik"
+      - "traefik.http.routers.traefik-dash-direct.service=api@internal"
+      - "traefik.http.routers.traefik-dash-direct.middlewares=traefik-auth"
       # Usuário local de administração do Traefik (padrão: admin / Admin@FPOne2026!)
-      # Gerado com htpasswd / bcrypt: $$2y$$05$$eWpL9B98b8b7hN5pCqU.yO0rWj7Y6A1qZ4V3n7E4mK9R5G0bU3P1y
       - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_BASIC_AUTH:-admin:$$2y$$05$$eWpL9B98b8b7hN5pCqU.yO0rWj7Y6A1qZ4V3n7E4mK9R5G0bU3P1y}"
 
   # ----------------------------------------------------------------------------
@@ -69,13 +81,14 @@ services:
       S3_BUCKET: ${S3_BUCKET:-fpone-files}
       S3_ACCESS_KEY: ${MINIO_ROOT_USER:-admin}
       S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-Admin@FPOne2026!}
-      # URL pública usada para assinar downloads de arquivos (repassada via Traefik)
-      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-${AUTH_URL:-http://${APP_DOMAIN:-localhost}}}
+      # URL pública do S3 para links pré-assinados (usa subdomínio S3_DOMAIN)
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-http://${S3_DOMAIN:-s3.localhost}}
       DEMO_MODE: ${DEMO_MODE:-false}
       FEATURE_AI_SEARCH: ${FEATURE_AI_SEARCH:-false}
       AUDIT_RETENTION_MONTHS: ${AUDIT_RETENTION_MONTHS:-24}
       AUTH_SECRET: ${AUTH_SECRET}
-      AUTH_URL: ${AUTH_URL:-http://${APP_DOMAIN:-localhost}}
+      # URL canônica da aplicação para redirecionamentos pós-login (usa APP_DOMAIN)
+      AUTH_URL: ${AUTH_URL:-http://${APP_DOMAIN:-intranet.localhost}}
       AUTH_TRUST_HOST: "true"
       TRUST_PROXY: "true"
       CPF_PEPPER: ${CPF_PEPPER}
@@ -86,19 +99,19 @@ services:
       MASTER_ADMIN_EMAIL: ${MASTER_ADMIN_EMAIL:-admin@fazendaprogresso.com.br}
     labels:
       - "traefik.enable=true"
-      # Roteador HTTP (Porta 80)
-      - "traefik.http.routers.web-http.rule=Host(`${APP_DOMAIN:-localhost}`) || PathPrefix(`/`)"
+      # --- Subdomínio da Aplicação FPOne (HTTP) ---
+      - "traefik.http.routers.web-http.rule=Host(`${APP_DOMAIN:-intranet.localhost}`) || Host(`localhost`)"
       - "traefik.http.routers.web-http.entrypoints=web"
       - "traefik.http.routers.web-http.service=web-service"
       - "traefik.http.routers.web-http.priority=1"
-      # Roteador HTTPS (Porta 443) com Let's Encrypt
-      - "traefik.http.routers.web-https.rule=Host(`${APP_DOMAIN:-localhost}`)"
+      # --- Subdomínio da Aplicação FPOne (HTTPS com SSL) ---
+      - "traefik.http.routers.web-https.rule=Host(`${APP_DOMAIN:-intranet.localhost}`)"
       - "traefik.http.routers.web-https.entrypoints=websecure"
       - "traefik.http.routers.web-https.tls=true"
       - "traefik.http.routers.web-https.tls.certresolver=letsencrypt"
       - "traefik.http.routers.web-https.service=web-service"
       - "traefik.http.routers.web-https.priority=1"
-      # Encaminhamento para a porta interna 3000 da aplicação
+      # Encaminhamento para a porta interna 3000
       - "traefik.http.services.web-service.loadbalancer.server.port=3000"
     depends_on:
       db:
@@ -114,7 +127,7 @@ services:
     restart: unless-stopped
     command: ["server", "/data", "--console-address", ":9001"]
     ports:
-      # Console Web administrativo do MinIO exposto para gerenciamento do time de TI
+      # Porta direta mantida como fallback para acesso local/rede interna
       - "${MINIO_CONSOLE_PORT:-9001}:9001"
     environment:
       # Usuário local de administração do MinIO
@@ -131,18 +144,32 @@ services:
       retries: 5
     labels:
       - "traefik.enable=true"
-      # Rota prioritária para download de arquivos pré-assinados (porta 9000)
-      - "traefik.http.routers.minio-files-http.rule=PathPrefix(`/${S3_BUCKET:-fpone-files}`)"
-      - "traefik.http.routers.minio-files-http.entrypoints=web"
-      - "traefik.http.routers.minio-files-http.service=minio-service"
-      - "traefik.http.routers.minio-files-http.priority=100"
-      - "traefik.http.routers.minio-files-https.rule=Host(`${APP_DOMAIN:-localhost}`) && PathPrefix(`/${S3_BUCKET:-fpone-files}`)"
-      - "traefik.http.routers.minio-files-https.entrypoints=websecure"
-      - "traefik.http.routers.minio-files-https.tls=true"
-      - "traefik.http.routers.minio-files-https.tls.certresolver=letsencrypt"
-      - "traefik.http.routers.minio-files-https.service=minio-service"
-      - "traefik.http.routers.minio-files-https.priority=100"
-      - "traefik.http.services.minio-service.loadbalancer.server.port=9000"
+      # --- 1. Subdomínio da API S3 / Downloads (Porta 9000) ---
+      # HTTP
+      - "traefik.http.routers.minio-s3-http.rule=Host(`${S3_DOMAIN:-s3.localhost}`) || PathPrefix(`/${S3_BUCKET:-fpone-files}`)"
+      - "traefik.http.routers.minio-s3-http.entrypoints=web"
+      - "traefik.http.routers.minio-s3-http.service=minio-s3"
+      - "traefik.http.routers.minio-s3-http.priority=100"
+      # HTTPS com SSL
+      - "traefik.http.routers.minio-s3-https.rule=Host(`${S3_DOMAIN:-s3.localhost}`) || (Host(`${APP_DOMAIN:-intranet.localhost}`) && PathPrefix(`/${S3_BUCKET:-fpone-files}`))"
+      - "traefik.http.routers.minio-s3-https.entrypoints=websecure"
+      - "traefik.http.routers.minio-s3-https.tls=true"
+      - "traefik.http.routers.minio-s3-https.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.minio-s3-https.service=minio-s3"
+      - "traefik.http.routers.minio-s3-https.priority=100"
+      - "traefik.http.services.minio-s3.loadbalancer.server.port=9000"
+      # --- 2. Subdomínio do Console Web Administrativo do MinIO (Porta 9001) ---
+      # HTTP
+      - "traefik.http.routers.minio-console-http.rule=Host(`${MINIO_CONSOLE_DOMAIN:-minio.localhost}`)"
+      - "traefik.http.routers.minio-console-http.entrypoints=web"
+      - "traefik.http.routers.minio-console-http.service=minio-console"
+      # HTTPS com SSL
+      - "traefik.http.routers.minio-console-https.rule=Host(`${MINIO_CONSOLE_DOMAIN:-minio.localhost}`)"
+      - "traefik.http.routers.minio-console-https.entrypoints=websecure"
+      - "traefik.http.routers.minio-console-https.tls=true"
+      - "traefik.http.routers.minio-console-https.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.minio-console-https.service=minio-console"
+      - "traefik.http.services.minio-console.loadbalancer.server.port=9001"
 
   # ----------------------------------------------------------------------------
   # 4. Inicializador Idempotente do Bucket S3 (MinIO Client - mc)
@@ -207,8 +234,6 @@ services:
   # ----------------------------------------------------------------------------
   # 7. Ferramentas CLI e Manutenção Sob Demanda (Profile: tools)
   # ----------------------------------------------------------------------------
-  # Exemplo: docker compose run --rm tools npm run db:deploy
-  #          docker compose run --rm tools npm run admin:bootstrap -- --matricula 000123
   tools:
     build:
       context: .
