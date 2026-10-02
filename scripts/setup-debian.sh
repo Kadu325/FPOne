@@ -7,6 +7,7 @@
 # ==============================================================================
 
 set -euo pipefail
+export PATH="/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin:$PATH"
 
 RED='\033[0;31m'
 GREEN='\033[0;32m'
@@ -66,7 +67,7 @@ fi
 # ------------------------------------------------------------------------------
 # 3. Configuração de Firewall UFW
 # ------------------------------------------------------------------------------
-if ufw status | grep -qw "active"; then
+if command -v ufw >/dev/null 2>&1 && ufw status 2>/dev/null | grep -qw "active"; then
   log "Ajustando regras de firewall no UFW..."
   ufw allow 22/tcp comment 'SSH' || true
   ufw allow 80/tcp comment 'HTTP FPOne' || true
