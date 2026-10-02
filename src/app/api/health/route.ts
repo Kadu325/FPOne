@@ -5,20 +5,24 @@ import { buildHealthReport } from "@/server/health/checks";
 
 export const dynamic = "force-dynamic";
 
-/** GET /api/health: verifica web, banco e Garage S3 (§182). */
+/** GET /api/health: verifica web, banco e MinIO S3 (§182). */
 export async function GET() {
   const report = await buildHealthReport({
     db: async () => {
       await db().$queryRaw`SELECT 1`;
     },
     storage: async () => {
-      // Garage expõe /health na Admin API (porta 3903) ou responde na S3 API (porta 3900).
-      // Usamos a S3 API para verificar disponibilidade — compatível com a URL GARAGE_ENDPOINT.
+      // MinIO expõe /minio/health/live ou responde na raiz da S3 API.
       const env = serverEnv();
-      const endpoint = env.GARAGE_ENDPOINT ?? env.MINIO_ENDPOINT;
-      const res = await fetch(new URL("/", endpoint!), { cache: "no-store", method: "HEAD" });
-      // Garage retorna 400 (sem autenticação) ou 200 na raiz — qualquer resposta HTTP indica que está vivo.
-      if (res.status === 0) throw new Error(`Garage inacessível`);
+      const endpoint = env.MINIO_ENDPOINT ?? env.GARAGE_ENDPOINT ?? "http://minio:9000";
+      try {
+        const liveRes = await fetch(new URL("/minio/health/live", endpoint), { cache: "no-store", method: "GET" });
+        if (liveRes.ok) return;
+      } catch {
+        // Fallback para requisição na raiz se endpoint customizado
+      }
+      const res = await fetch(new URL("/", endpoint), { cache: "no-store", method: "HEAD" });
+      if (res.status === 0) throw new Error("Storage S3 inacessível");
     },
   });
   return NextResponse.json(report, {

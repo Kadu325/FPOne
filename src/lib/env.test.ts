@@ -39,16 +39,15 @@ describe("parseServerEnv", () => {
     expect(() => parseServerEnv({ ...base, AUTH_SECRET: undefined })).toThrow(/AUTH_SECRET/);
   });
 
-  it("aceita MINIO_ENDPOINT como fallback (compatibilidade legada)", () => {
-    // Ambientes que ainda usam MINIO_ENDPOINT devem continuar funcionando
+  it("aceita MINIO_ENDPOINT ou GARAGE_ENDPOINT", () => {
+    expect(() => parseServerEnv(base)).not.toThrow();
     expect(() => parseServerEnv(baseLegacy)).not.toThrow();
     const env = parseServerEnv(baseLegacy);
     expect(env.MINIO_ENDPOINT).toBe("http://minio:9000");
   });
 
-  it("exige pelo menos GARAGE_ENDPOINT ou MINIO_ENDPOINT", () => {
-    const noStorage = { ...base, GARAGE_ENDPOINT: undefined };
+  it("exige pelo menos MINIO_ENDPOINT ou GARAGE_ENDPOINT", () => {
     // Sem nenhum dos dois, deve lançar erro
-    expect(() => parseServerEnv({ DATABASE_URL: base.DATABASE_URL, AUTH_SECRET: base.AUTH_SECRET, CPF_PEPPER: base.CPF_PEPPER })).toThrow(/GARAGE_ENDPOINT/);
+    expect(() => parseServerEnv({ DATABASE_URL: base.DATABASE_URL, AUTH_SECRET: base.AUTH_SECRET, CPF_PEPPER: base.CPF_PEPPER })).toThrow(/MINIO_ENDPOINT|GARAGE_ENDPOINT/);
   });
 });

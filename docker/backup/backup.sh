@@ -17,15 +17,13 @@ run_backup() {
   pg_dump --format=custom --file="$BACKUP_DIR/db/fpone-$stamp.dump.partial"
   mv "$BACKUP_DIR/db/fpone-$stamp.dump.partial" "$BACKUP_DIR/db/fpone-$stamp.dump"
 
-  echo "[backup] $stamp: espelhando bucket $S3_BUCKET via Garage S3"
-  # Provider "Other" com endpoint customizado é o modo correto para Garage no rclone;
-  # "Minio" funciona mas provoca avisos sobre presigned URL que o Garage não precisa.
+  echo "[backup] $stamp: espelhando bucket $S3_BUCKET via MinIO S3"
   RCLONE_CONFIG_S3_TYPE=s3 \
-  RCLONE_CONFIG_S3_PROVIDER=Other \
+  RCLONE_CONFIG_S3_PROVIDER=Minio \
   RCLONE_CONFIG_S3_ENDPOINT="$S3_ENDPOINT" \
   RCLONE_CONFIG_S3_ACCESS_KEY_ID="$S3_ACCESS_KEY" \
   RCLONE_CONFIG_S3_SECRET_ACCESS_KEY="$S3_SECRET_KEY" \
-  RCLONE_CONFIG_S3_REGION=garage \
+  RCLONE_CONFIG_S3_REGION=us-east-1 \
   RCLONE_CONFIG_S3_FORCE_PATH_STYLE=true \
     rclone sync "s3:$S3_BUCKET" "$BACKUP_DIR/storage/$S3_BUCKET" --quiet
 

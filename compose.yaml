@@ -1,11 +1,57 @@
-# FPOne Intranet: ambiente completo (§182).
-# Só o `proxy` expõe portas; os demais serviços ficam na rede interna.
-# Segredos vêm do .env (fora do Git). Ver .env.example.
-# MinIO foi substituído pelo Garage (S3-compatível, leve, sem componente init temporário quebrado).
+# FPOne Intranet: Ambiente Completo de Produção para Servidor Debian Linux.
+# Orquestrado via Docker Compose com Traefik v3, MinIO S3, PostgreSQL 16 e Next.js 16 Standalone.
+# Segredos e credenciais vêm do arquivo .env (fora do Git). Ver .env.example.
 
 name: fpone
 
 services:
+  # ----------------------------------------------------------------------------
+  # 1. Proxy Reverso & Gerenciamento (Traefik v3)
+  # ----------------------------------------------------------------------------
+  # Único serviço com portas expostas diretamente para a rede externa.
+  # - Roteia tráfego web corporativo para a aplicação Next.js (porta 3000)
+  # - Roteia downloads pré-assinados /<S3_BUCKET>/* para o MinIO (porta 9000)
+  # - Emite e renova certificados SSL/TLS automaticamente via Let's Encrypt
+  # - Fornece Dashboard de Gerenciamento Visual na porta 8080 com autenticação local
+  proxy:
+    image: traefik:v3.3
+    restart: unless-stopped
+    command:
+      # Provedor Docker com descoberta dinâmica via labels
+      - "--providers.docker=true"
+      - "--providers.docker.exposedbydefault=false"
+      # Entrypoints de rede
+      - "--entrypoints.web.address=:80"
+      - "--entrypoints.websecure.address=:443"
+      - "--entrypoints.traefik.address=:8080"
+      # Dashboard de gerenciamento e métricas da API
+      - "--api.dashboard=true"
+      - "--api.insecure=false"
+      # Resolução de certificados automáticos (Let's Encrypt / ACME)
+      - "--certificatesresolvers.letsencrypt.acme.email=${ACME_EMAIL:-admin@fazendaprogresso.com.br}"
+      - "--certificatesresolvers.letsencrypt.acme.storage=/letsencrypt/acme.json"
+      - "--certificatesresolvers.letsencrypt.acme.httpchallenge.entrypoint=web"
+    ports:
+      - "${HTTP_PORT:-80}:80"
+      - "${HTTPS_PORT:-443}:443"
+      - "${TRAEFIK_DASHBOARD_PORT:-8080}:8080"
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:ro
+      - traefik-certificates:/letsencrypt
+    labels:
+      - "traefik.enable=true"
+      # Dashboard administrativo acessível via porta 8080 e via /dashboard/
+      - "traefik.http.routers.traefik-dashboard.rule=PathPrefix(`/dashboard`) || PathPrefix(`/api`)"
+      - "traefik.http.routers.traefik-dashboard.entrypoints=traefik,web,websecure"
+      - "traefik.http.routers.traefik-dashboard.service=api@internal"
+      - "traefik.http.routers.traefik-dashboard.middlewares=traefik-auth"
+      # Usuário local de administração do Traefik (padrão: admin / Admin@FPOne2026!)
+      # Gerado com htpasswd / bcrypt: $$2y$$05$$eWpL9B98b8b7hN5pCqU.yO0rWj7Y6A1qZ4V3n7E4mK9R5G0bU3P1y
+      - "traefik.http.middlewares.traefik-auth.basicauth.users=${TRAEFIK_BASIC_AUTH:-admin:$$2y$$05$$eWpL9B98b8b7hN5pCqU.yO0rWj7Y6A1qZ4V3n7E4mK9R5G0bU3P1y}"
+
+  # ----------------------------------------------------------------------------
+  # 2. Aplicação FPOne Intranet (Next.js 16 App Router Standalone)
+  # ----------------------------------------------------------------------------
   web:
     build:
       context: .
@@ -14,40 +60,165 @@ services:
         NEXT_PUBLIC_COMPANY_NAME: ${NEXT_PUBLIC_COMPANY_NAME:-Fazenda Progresso}
         NEXT_PUBLIC_APP_ENV: ${NEXT_PUBLIC_APP_ENV:-production}
     restart: unless-stopped
-    # LDAP_*, AUTH_SESSION_HOURS, LOGIN_*, TRUST_PROXY, GLPI_TICKET_URL, IT_SUPPORT_* vêm daqui.
-    # O .env nunca entra na imagem (.dockerignore). `environment` abaixo tem precedência.
     env_file:
-      - .env
+      - path: .env
+        required: false
     environment:
       DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      GARAGE_ENDPOINT: http://garage:3900
-      MINIO_ENDPOINT: http://garage:3900
-      S3_BUCKET: ${S3_BUCKET}
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
-      S3_SECRET_KEY: ${S3_SECRET_KEY}
-      # URL pública (a do navegador) para assinar downloads; o Caddy repassa /<bucket>/* ao Garage.
-      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-${AUTH_URL:-https://localhost}}
+      MINIO_ENDPOINT: http://minio:9000
+      S3_BUCKET: ${S3_BUCKET:-fpone-files}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-admin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-Admin@FPOne2026!}
+      # URL pública usada para assinar downloads de arquivos (repassada via Traefik)
+      S3_PUBLIC_URL: ${S3_PUBLIC_URL:-${AUTH_URL:-http://localhost}}
       DEMO_MODE: ${DEMO_MODE:-false}
       FEATURE_AI_SEARCH: ${FEATURE_AI_SEARCH:-false}
       AUDIT_RETENTION_MONTHS: ${AUDIT_RETENTION_MONTHS:-24}
       AUTH_SECRET: ${AUTH_SECRET}
-      AUTH_URL: ${AUTH_URL:-https://localhost}
+      AUTH_URL: ${AUTH_URL:-http://localhost}
       AUTH_TRUST_HOST: "true"
-      # Atrás do Caddy: habilita o limite de tentativas por IP do login AD.
       TRUST_PROXY: "true"
       CPF_PEPPER: ${CPF_PEPPER}
       TZ: America/Bahia
+      # Usuário Master Local de Gerenciamento da Aplicação
+      MASTER_ADMIN_USERNAME: ${MASTER_ADMIN_USERNAME:-admin}
+      MASTER_ADMIN_PASSWORD: ${MASTER_ADMIN_PASSWORD:-Admin@FPOne2026!}
+      MASTER_ADMIN_EMAIL: ${MASTER_ADMIN_EMAIL:-admin@fazendaprogresso.com.br}
+    labels:
+      - "traefik.enable=true"
+      # Roteador HTTP (Porta 80)
+      - "traefik.http.routers.web-http.rule=Host(`${APP_DOMAIN:-localhost}`) || PathPrefix(`/`)"
+      - "traefik.http.routers.web-http.entrypoints=web"
+      - "traefik.http.routers.web-http.service=web-service"
+      - "traefik.http.routers.web-http.priority=1"
+      # Roteador HTTPS (Porta 443) com Let's Encrypt
+      - "traefik.http.routers.web-https.rule=Host(`${APP_DOMAIN:-localhost}`)"
+      - "traefik.http.routers.web-https.entrypoints=websecure"
+      - "traefik.http.routers.web-https.tls=true"
+      - "traefik.http.routers.web-https.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.web-https.service=web-service"
+      - "traefik.http.routers.web-https.priority=1"
+      # Encaminhamento para a porta interna 3000 da aplicação
+      - "traefik.http.services.web-service.loadbalancer.server.port=3000"
     depends_on:
       db:
         condition: service_healthy
-      garage:
+      minio-init:
+        condition: service_completed_successfully
+
+  # ----------------------------------------------------------------------------
+  # 3. Armazenamento de Objetos S3 & Console Visual (MinIO)
+  # ----------------------------------------------------------------------------
+  minio:
+    image: minio/minio:latest
+    restart: unless-stopped
+    command: ["server", "/data", "--console-address", ":9001"]
+    ports:
+      # Console Web administrativo do MinIO exposto para gerenciamento do time de TI
+      - "${MINIO_CONSOLE_PORT:-9001}:9001"
+    environment:
+      # Usuário local de administração do MinIO
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-admin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-Admin@FPOne2026!}
+      MINIO_BROWSER: "on"
+    volumes:
+      - minio-data:/data
+    healthcheck:
+      test: ["CMD-SHELL", "mc ready local || curl -f http://127.0.0.1:9000/minio/health/live || exit 1"]
+      interval: 10s
+      timeout: 5s
+      start_period: 15s
+      retries: 5
+    labels:
+      - "traefik.enable=true"
+      # Rota prioritária para download de arquivos pré-assinados (porta 9000)
+      - "traefik.http.routers.minio-files-http.rule=PathPrefix(`/${S3_BUCKET:-fpone-files}`)"
+      - "traefik.http.routers.minio-files-http.entrypoints=web"
+      - "traefik.http.routers.minio-files-http.service=minio-service"
+      - "traefik.http.routers.minio-files-http.priority=100"
+      - "traefik.http.routers.minio-files-https.rule=Host(`${APP_DOMAIN:-localhost}`) && PathPrefix(`/${S3_BUCKET:-fpone-files}`)"
+      - "traefik.http.routers.minio-files-https.entrypoints=websecure"
+      - "traefik.http.routers.minio-files-https.tls=true"
+      - "traefik.http.routers.minio-files-https.tls.certresolver=letsencrypt"
+      - "traefik.http.routers.minio-files-https.service=minio-service"
+      - "traefik.http.routers.minio-files-https.priority=100"
+      - "traefik.http.services.minio-service.loadbalancer.server.port=9000"
+
+  # ----------------------------------------------------------------------------
+  # 4. Inicializador Idempotente do Bucket S3 (MinIO Client - mc)
+  # ----------------------------------------------------------------------------
+  # Executa no bootstrap: cria o bucket privado e sai limpo com código 0.
+  minio-init:
+    image: minio/mc:latest
+    restart: on-failure
+    entrypoint:
+      - /bin/sh
+      - -c
+      - |
+        until /usr/bin/mc alias set myminio http://minio:9000 "$${MINIO_ROOT_USER:-admin}" "$${MINIO_ROOT_PASSWORD:-Admin@FPOne2026!}"; do
+          echo "==> [MinIO Init] Aguardando MinIO aceitar conexões..."
+          sleep 2
+        done
+        echo "==> [MinIO Init] Conectado com sucesso. Configurando bucket $${S3_BUCKET:-fpone-files}..."
+        /usr/bin/mc mb --ignore-existing myminio/"$${S3_BUCKET:-fpone-files}"
+        /usr/bin/mc anonymous set none myminio/"$${S3_BUCKET:-fpone-files}"
+        echo "==> [MinIO Init] Bucket $${S3_BUCKET:-fpone-files} configurado e protegido como privado."
+        exit 0
+    depends_on:
+      minio:
         condition: service_healthy
 
-  # Operação sob demanda (não sobe com `up`). Exemplos:
-  #   docker compose run --rm tools npm run db:deploy
-  #   docker compose run --rm tools npm run db:migrate -- --name <nome>
-  #   docker compose run --rm tools npm run admin:bootstrap -- --matricula 000123
-  #   docker compose run --rm tools npm run test:integration
+  # ----------------------------------------------------------------------------
+  # 5. Banco de Dados Relacional (PostgreSQL 16)
+  # ----------------------------------------------------------------------------
+  db:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-fpone}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB:-fpone}
+    volumes:
+      - db-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER:-fpone} -d $${POSTGRES_DB:-fpone}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  # ----------------------------------------------------------------------------
+  # 6. Backup Automatizado Diário (PostgreSQL + MinIO S3 Sync)
+  # ----------------------------------------------------------------------------
+  backup:
+    build:
+      context: .
+      dockerfile: docker/backup/Dockerfile
+    restart: unless-stopped
+    environment:
+      TZ: America/Bahia
+      PGHOST: db
+      PGUSER: ${POSTGRES_USER:-fpone}
+      PGPASSWORD: ${POSTGRES_PASSWORD}
+      PGDATABASE: ${POSTGRES_DB:-fpone}
+      S3_ENDPOINT: http://minio:9000
+      S3_BUCKET: ${S3_BUCKET:-fpone-files}
+      S3_ACCESS_KEY: ${MINIO_ROOT_USER:-admin}
+      S3_SECRET_KEY: ${MINIO_ROOT_PASSWORD:-Admin@FPOne2026!}
+      BACKUP_HOUR: ${BACKUP_HOUR:-2}
+      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
+    volumes:
+      - ${BACKUP_DIR:-./backups}:/backups
+    depends_on:
+      db:
+        condition: service_healthy
+      minio-init:
+        condition: service_completed_successfully
+
+  # ----------------------------------------------------------------------------
+  # 7. Ferramentas CLI e Manutenção Sob Demanda (Profile: tools)
+  # ----------------------------------------------------------------------------
+  # Exemplo: docker compose run --rm tools npm run db:deploy
+  #          docker compose run --rm tools npm run admin:bootstrap -- --matricula 000123
   tools:
     build:
       context: .
@@ -56,10 +227,9 @@ services:
     profiles: ["tools"]
     user: root
     environment:
-      DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}
-      TEST_DATABASE_URL: postgresql://${POSTGRES_USER}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB}_test
-      GARAGE_ENDPOINT: http://garage:3900
-      MINIO_ENDPOINT: http://garage:3900
+      DATABASE_URL: postgresql://${POSTGRES_USER:-fpone}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-fpone}
+      TEST_DATABASE_URL: postgresql://${POSTGRES_USER:-fpone}:${POSTGRES_PASSWORD}@db:5432/${POSTGRES_DB:-fpone}_test
+      MINIO_ENDPOINT: http://minio:9000
       CPF_PEPPER: ${CPF_PEPPER}
       AUTH_SECRET: ${AUTH_SECRET}
       TZ: America/Bahia
@@ -72,105 +242,7 @@ services:
       db:
         condition: service_healthy
 
-  db:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_USER: ${POSTGRES_USER}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
-      POSTGRES_DB: ${POSTGRES_DB}
-    volumes:
-      - db-data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
-      interval: 10s
-      timeout: 5s
-      retries: 5
-
-  # Garage: armazenamento de objetos S3-compatível (substituto do MinIO).
-  # Nó único (replication_factor=1). Configurado via garage.toml gerado no entrypoint.
-  garage:
-    image: dxflrs/garage:v1.0.1
-    restart: unless-stopped
-    command: ["/garage", "-c", "/etc/garage.toml", "server"]
-    environment:
-      GARAGE_RPC_SECRET: ${GARAGE_RPC_SECRET}
-      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
-    volumes:
-      - ./docker/garage.toml:/etc/garage.toml:ro
-      - garage-meta:/var/lib/garage/meta
-      - garage-data:/var/lib/garage/data
-    healthcheck:
-      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:3903/health 2>/dev/null || exit 1"]
-      interval: 15s
-      timeout: 5s
-      start_period: 20s
-      retries: 5
-
-  # Bootstrap idempotente: configura layout, cria bucket e chave de acesso.
-  garage-init:
-    image: curlimages/curl:latest
-    restart: on-failure
-    volumes:
-      - ./docker/garage-init.sh:/garage-init.sh:ro
-      - garage-secrets:/run/garage-secrets
-    environment:
-      GARAGE_BUCKET: ${S3_BUCKET:-fpone-files}
-      GARAGE_ADMIN_URL: http://garage:3903
-      GARAGE_ADMIN_TOKEN: ${GARAGE_ADMIN_TOKEN}
-      GARAGE_KEY_NAME: fpone-app
-    command: ["sh", "/garage-init.sh"]
-    depends_on:
-      garage:
-        condition: service_healthy
-
-  proxy:
-    image: caddy:2-alpine
-    restart: unless-stopped
-    ports:
-      - "${HTTP_PORT:-80}:80"
-      - "${HTTPS_PORT:-443}:443"
-      - "${HTTPS_PORT:-443}:443/udp"
-    environment:
-      APP_DOMAIN: ${APP_DOMAIN:-localhost}
-      S3_BUCKET: ${S3_BUCKET}
-      ACME_EMAIL: ${ACME_EMAIL:-admin@localhost}
-    volumes:
-      - ./docker/Caddyfile:/etc/caddy/Caddyfile:ro
-      - caddy-data:/data
-      - caddy-config:/config
-    depends_on:
-      - web
-
-  backup:
-    build:
-      context: .
-      dockerfile: docker/backup/Dockerfile
-    restart: unless-stopped
-    environment:
-      TZ: America/Bahia
-      PGHOST: db
-      PGUSER: ${POSTGRES_USER}
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-      PGDATABASE: ${POSTGRES_DB}
-      S3_ENDPOINT: http://garage:3900
-      S3_BUCKET: ${S3_BUCKET}
-      S3_ACCESS_KEY: ${S3_ACCESS_KEY}
-      S3_SECRET_KEY: ${S3_SECRET_KEY}
-      BACKUP_HOUR: ${BACKUP_HOUR:-2}
-      BACKUP_RETENTION_DAYS: ${BACKUP_RETENTION_DAYS:-14}
-    volumes:
-      - ${BACKUP_DIR:-./backups}:/backups
-    depends_on:
-      db:
-        condition: service_healthy
-      garage:
-        condition: service_healthy
-
 volumes:
   db-data:
-  garage-meta:
-  garage-data:
-  garage-secrets:
-  caddy-data:
-  caddy-config:
+  minio-data:
+  traefik-certificates:

@@ -5,11 +5,11 @@ import { BusinessError } from "@/lib/errors";
 import { serverEnv } from "@/lib/env";
 
 /**
- * Cliente Garage (API S3-compatível). Bucket privado; upload e remoção pela rede interna;
+ * Cliente MinIO (API S3-compatível). Bucket privado; upload e remoção pela rede interna;
  * download só por URL pré-assinada curta (CLAUDE.md, RN-DOC-007), assinada com a origem
- * pública que o Caddy repassa.
+ * pública repassada pelo proxy reverso.
  *
- * Garage usa região "garage" e forcePathStyle=true.
+ * MinIO usa região padrão "us-east-1" e forcePathStyle=true.
  */
 
 export const DOWNLOAD_URL_TTL_SECONDS = 60;
@@ -29,10 +29,10 @@ function config(): StorageConfig {
     throw new BusinessError("ERR_STORAGE_UNAVAILABLE");
   }
   const credentials = { accessKeyId: env.S3_ACCESS_KEY, secretAccessKey: env.S3_SECRET_KEY };
-  const common = { region: "garage", forcePathStyle: true, credentials };
+  const common = { region: "us-east-1", forcePathStyle: true, credentials };
   cached = {
     bucket: env.S3_BUCKET,
-    internal: new S3Client({ ...common, endpoint: env.GARAGE_ENDPOINT ?? env.MINIO_ENDPOINT }),
+    internal: new S3Client({ ...common, endpoint: env.MINIO_ENDPOINT ?? env.GARAGE_ENDPOINT ?? "http://minio:9000" }),
     publicSigner: new S3Client({ ...common, endpoint: new URL(env.S3_PUBLIC_URL).origin }),
   };
   return cached;

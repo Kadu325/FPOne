@@ -6,179 +6,224 @@
 
 ## 1. Visão Geral e Arquitetura
 
-O **FPOne Intranet** centraliza comunicação corporativa, diretório de pessoas, acervo de documentos, agenda de eventos, catálogo de sistemas internos e indicadores executivos.
+O **FPOne Intranet** centraliza a comunicação corporativa, diretório de pessoas, acervo de documentos, agenda de eventos, catálogo de links/sistemas internos e indicadores executivos.
+
+A aplicação opera de forma autônoma em um **servidor dedicado Debian Linux**, orquestrada via **Docker Compose**, utilizando **MinIO** como motor de armazenamento S3 e **Traefik v3** como proxy reverso com gerenciamento visual, SSL/TLS automático e roteamento inteligente.
+
+### Arquitetura da Solução
+
+```mermaid
+graph TD
+    User([Colaboradores Web/Mobile]) -->|Portas 80 / 443 HTTP/HTTPS| Traefik[Proxy Reverso Traefik v3]
+    Admin([Administrador TI]) -->|Porta 8080 /dashboard/| TraefikDash[Traefik Dashboard]
+    Admin -->|Porta 9001 /| MinIOConsole[MinIO Web Console]
+    
+    subgraph Servidor Dedicado Debian Linux
+        Traefik -->|Roteamento /| Web[App FPOne - Next.js 16 Standalone :3000]
+        Traefik -->|Roteamento /{S3_BUCKET}/*| MinIO[MinIO S3 Storage :9000]
+        
+        Web -->|Consultas SQL| DB[(PostgreSQL 16 :5432)]
+        Web -->|Upload / Assinatura S3| MinIO
+        Web -->|Validação Credenciais| AD[Active Directory / LDAP]
+        
+        MinIOInit[MinIO Init / mc] -.->|Criação Idempotente do Bucket| MinIO
+        Backup[Serviço Backup Diário] -->|pg_dump| DB
+        Backup -->|rclone S3 sync| MinIO
+    end
+```
 
 ### Stack Tecnológica
 * **Frontend**: Next.js 16 (App Router), React 19, Tailwind CSS v4, Lucide Icons, TipTap Rich Text Editor.
 * **Backend**: Server Actions, Route Handlers, Zod Validation.
-* **Autenticação & Sessão**: Auth.js v5 (NextAuth) com suporte a Active Directory (LDAP corporativo via `ldapts`), controle estrito de sessão (`session_version`) e fallback local seguro auditado.
+* **Proxy Reverso & Gerenciamento**: Traefik v3 com Dashboard visual, suporte a HTTP/3, WebSockets e emissão automática de SSL/TLS (Let's Encrypt).
+* **Armazenamento de Arquivos**: MinIO Object Storage (API AWS S3 compatível) com console gráfico na porta `9001` e inicialização idempotente automatizada (`minio/mc`).
+* **Banco de Dados**: PostgreSQL 16 com Prisma ORM 7 e migrações versionadas.
+* **Autenticação & Sessão**: Auth.js v5 (NextAuth) com suporte a Active Directory (LDAP corporativo via `ldapts`), controle estrito de sessão e fallback seguro para Administrador Local.
 * **Autorização (RBAC & Audiência)**: Matriz estrita de permissões no servidor (`can()`) e filtro de confidencialidade por público-alvo (`audienceFilter()`).
-* **Banco de Dados**: PostgreSQL 16 com Prisma ORM 7 e migrations versionadas.
-* **Armazenamento de Arquivos**: Garage S3 (nó único, leve e performático) com acesso via URLs pré-assinadas temporárias de 60 segundos.
-* **Orquestração & Produção**: Dockerfile multi-stage standalone, healthcheck nativo e suporte nativo ao **Easypanel (Docker Swarm)**.
+* **Orquestração**: Docker Compose com suporte a Debian 12 (Bookworm) e Debian 11 (Bullseye).
 
 ---
 
-## 2. Como Subir a Aplicação no Easypanel (Docker Swarm)
+## 2. Usuários Locais de Administração (Gerenciamento da Ferramenta)
 
-O Easypanel utiliza o Docker Swarm por baixo dos panos para orquestrar serviços, réplicas e roteamento com SSL automático via Traefik.
+Para garantir acesso imediato e total controle operacional em manutenções ou caso serviços externos (como o Active Directory) estejam indisponíveis, a stack conta com usuários locais de administração pré-configurados:
 
-A aplicação inclui o arquivo [`easypanel.json`](./easypanel.json), que define a stack completa de produção com 3 serviços interligados:
-1. `db`: Banco de dados relacional PostgreSQL 16.
-2. `garage`: Storage S3-compatível com volumes dedicados para metadados e dados.
-3. `web`: Aplicação FPOne Intranet em modo standalone, com proxy reverso e migrações automáticas do Prisma.
+| Ferramenta / Serviço | Interface de Acesso | Usuário Padrão | Senha Padrão / Variável | Finalidade |
+|---|---|---|---|---|
+| **Portal FPOne Intranet** | `http://<ip-servidor>/login` | `admin` | `Admin@FPOne2026!` (`MASTER_ADMIN_PASSWORD`) | Super Administrador da Intranet (Acesso total às 17 permissões do sistema) |
+| **MinIO Storage Console** | `http://<ip-servidor>:9001` | `admin` | `Admin@FPOne2026!` (`MINIO_ROOT_PASSWORD`) | Console Web de arquivos S3, buckets, cotas e chaves de acesso |
+| **Traefik Dashboard** | `http://<ip-servidor>:8080/dashboard/` | `admin` | `Admin@FPOne2026!` (`TRAEFIK_BASIC_AUTH`) | Painel visual de rotas, middlewares, integridade e certificados SSL |
+| **Banco PostgreSQL** | `db:5432` (interno) | `fpone` | Definida em `.env` (`POSTGRES_PASSWORD`) | Administrador do banco de dados relacional |
 
-### Passo 1: Criar o Projeto e Importar o Template JSON
-1. No painel do seu **Easypanel**, clique em **New Project** (nomeie como `fpone` ou `intranet`).
-2. Dentro do projeto, clique no botão de adicionar serviço e selecione **Templates** (ou clique em **Create from JSON / Schema**).
-3. Abra o arquivo [`easypanel.json`](./easypanel.json) deste repositório, copie todo o seu conteúdo e cole no campo de texto do Easypanel.
-4. Clique em **Create**. O Easypanel criará instantaneamente os 3 serviços (`db`, `garage` e `web`).
+> 💡 **Nota de Segurança**: É altamente recomendado alterar as senhas padrões no arquivo `.env` antes de colocar o ambiente em produção pública.
 
 ---
 
-### Passo 2: Configurar o Repositório GitHub no Serviço Web
-1. No Easypanel, clique no serviço **web**.
-2. Vá na aba **Deploy / Source**:
-   * **Source Type**: GitHub.
-   * **Repository**: `https://github.com/Kadu325/FPOne` (ou selecione na sua conta GitHub integrada).
-   * **Branch**: `main` (ou `dev`).
-   * **Build Method**: Dockerfile (o Easypanel detectará automaticamente o `Dockerfile` na raiz).
-3. Vá na aba **Domains**:
-   * O Easypanel vinculará o domínio configurado (ex: `intranet.suaempresa.com.br`) com certificado SSL Let's Encrypt automático na porta interna `3000`.
+## 3. Como Subir a Aplicação no Servidor Debian Linux
 
----
+### Método A: Instalação Automatizada (Recomendado)
 
-### Passo 3: Configurar as Variáveis de Ambiente
-Na aba **Environment** do serviço `web`, as seguintes variáveis já vêm preconfiguradas com links internos do Swarm. Preencha os valores específicos de produção:
-
-| Variável | Descrição / Exemplo |
-|---|---|
-| `DATABASE_URL` | Conexão interna Postgres (gerada automaticamente pelo template) |
-| `GARAGE_ENDPOINT` | `http://$(PROJECT_NAME)_garage:3900` |
-| `S3_BUCKET` | `fpone-files` |
-| `S3_ACCESS_KEY` | Chave de acesso S3 gerada no passo de bootstrap do Garage |
-| `S3_SECRET_KEY` | Chave secreta S3 gerada no passo de bootstrap do Garage |
-| `S3_PUBLIC_URL` | Domínio público HTTPS (ex: `https://intranet.suaempresa.com.br`) |
-| `AUTH_SECRET` | Chave aleatória de 32+ caracteres (`openssl rand -hex 32`) |
-| `AUTH_URL` | `https://$(PRIMARY_DOMAIN)` |
-| `AUTH_TRUST_HOST` | `true` |
-| `TRUST_PROXY` | `true` (necessário para ler IP real do cliente atrás do Traefik) |
-| `CPF_PEPPER` | Segredo aleatório para hash HMAC-SHA256 de CPF |
-| `TZ` | `America/Bahia` (fuso horário corporativo) |
-| `AD_ENABLED` | `true` (ativa login via Active Directory) |
-| `AD_HOST` | IP ou hostname do Controlador de Domínio (ex: `192.168.77.250`) |
-| `AD_PORT` | `389` (LDAP) ou `636` (LDAPS) |
-| `AD_BASE_DN` | Base DN (ex: `dc=fazendaprogresso,dc=com,dc=local`) |
-| `AD_BIND_DN` | Conta de serviço (ex: `FP\glpi` ou `glpi@fazendaprogresso.com.local`) |
-| `AD_BIND_PASSWORD` | Senha da conta de serviço técnica do AD |
-
-Clique em **Save**.
-
----
-
-### Passo 4: Realizar o Deploy
-1. Clique em **Deploy** no serviço `web`.
-2. O Dockerfile multi-stage executará:
-   * Instalação limpa de dependências.
-   * Geração dos clientes Prisma ORM.
-   * Compilação Next.js standalone otimizada.
-   * Execução do `docker-entrypoint.sh` (aplica `prisma migrate deploy` automaticamente antes de iniciar o servidor).
-
----
-
-### Passo 5: Bootstrap Obrigatório do Garage S3 (Executado apenas 1 vez)
-Após o primeiro deploy, é necessário criar o bucket e as chaves de acesso no Garage.
-
-1. No Easypanel, acesse o serviço **garage** e abra a aba **Console / Terminal**.
-2. Execute a sequência de comandos abaixo:
+Disponibilizamos um script que realiza toda a preparação do Debian 12 ou 11 (instalação do Docker oficial, Docker Compose, regras de firewall UFW, geração de `.env` com senhas fortes e inicialização dos containers):
 
 ```bash
-# 1. Obter o Node ID do Garage
-garage status
+# 1. No servidor Debian, clone o repositório
+git clone https://github.com/Kadu325/FPOne.git /opt/fpone
+cd /opt/fpone
 
-# 2. Configurar o layout de armazenamento (substitua <NODE_ID> pelo valor obtido no comando anterior)
-garage layout assign -z dc1 -c 10G <NODE_ID>
-garage layout apply --version 1
-
-# 3. Criar o bucket oficial de arquivos
-garage bucket create fpone-files
-
-# 4. Criar a chave de acesso da aplicação
-garage key create fpone-app
-
-# 5. Autorizar permissões de leitura e escrita
-garage bucket allow fpone-files --read --write --key fpone-app
-```
-
-3. O comando do item 4 exibirá o **Access Key ID** e a **Secret Key**. Copie esses valores.
-4. Volte nas variáveis de ambiente do serviço **web**, preencha `S3_ACCESS_KEY` e `S3_SECRET_KEY` e clique em **Save & Redeploy**.
-
-Os arquivos do Garage persistem permanentemente nos volumes montados `meta` e `data`.
-
----
-
-### Passo 6: Acesso com o Usuário Master de Gerenciamento Interno
-Para que você possa gerenciar a aplicação imediatamente após o deploy (mesmo antes de sincronizar o Active Directory ou em manutenções internas), a aplicação conta com um **Usuário Master Administrador** pré-configurado:
-
-* **Usuário / Login**: `admin` (ou o valor definido em `MASTER_ADMIN_USERNAME`)
-* **Senha Inicial**: `Admin@FPOne2026!` (ou a senha configurada na variável `MASTER_ADMIN_PASSWORD`)
-* **Perfil**: `ADMIN` (Acesso total com todas as 17 permissões do sistema)
-
-> 💡 **Recomendação de Segurança**: No Easypanel, defina a variável `MASTER_ADMIN_PASSWORD` no serviço `web` com uma senha forte personalizada. O usuário Master é inicializado automaticamente no primeiro login ou pelo script de startup.
-
----
-
-### Passo 7: (Opcional) Bootstrap de Administrador por Matrícula
-Caso queira promover outro colaborador específico importado da rede/RH a Administrador:
-
-No console do serviço **web**:
-```bash
-node scripts/admin-bootstrap.js --matricula <MATRICULA_DO_ADMIN>
+# 2. Execute o instalador automatizado com privilégios de root
+sudo bash scripts/setup-debian.sh
 ```
 
 ---
 
-## 3. Desenvolvimento e Validação Local
+### Método B: Instalação Manual Passo a Passo
 
-Para executar o projeto localmente em ambiente de desenvolvimento:
+Caso prefira executar o processo manualmente:
+
+#### 1. Instalar o Docker Engine e Docker Compose no Debian
+```bash
+sudo apt-get update -y
+sudo apt-get install -y ca-certificates curl gnupg git openssl ufw
+
+# Adicionar repositório oficial da Docker
+sudo install -m 0755 -d /etc/apt/keyrings
+curl -fsSL https://download.docker.com/linux/debian/gpg | sudo gpg --dearmor -o /etc/apt/keyrings/docker.gpg --yes
+sudo chmod a+r /etc/apt/keyrings/docker.gpg
+
+echo \
+  "deb [arch=$(dpkg --print-architecture) signed-by=/etc/apt/keyrings/docker.gpg] https://download.docker.com/linux/debian \
+  $(. /etc/os-release && echo "$VERSION_CODENAME") stable" | sudo tee /etc/apt/sources.list.d/docker.list > /dev/null
+
+sudo apt-get update -y
+sudo apt-get install -y docker-ce docker-ce-cli containerd.io docker-buildx-plugin docker-compose-plugin
+sudo systemctl enable --now docker
+```
+
+#### 2. Configurar as Portas no Firewall UFW
+```bash
+sudo ufw allow 22/tcp    # SSH
+sudo ufw allow 80/tcp    # HTTP (Traefik)
+sudo ufw allow 443/tcp   # HTTPS (Traefik)
+sudo ufw allow 8080/tcp  # Traefik Dashboard
+sudo ufw allow 9001/tcp  # MinIO Console
+sudo ufw reload
+```
+
+#### 3. Clonar o Projeto e Configurar o `.env`
+```bash
+git clone https://github.com/Kadu325/FPOne.git /opt/fpone
+cd /opt/fpone
+
+# Copiar arquivo de exemplo
+cp .env.example .env
+
+# Gerar segredos criptográficos obrigatórios
+sed -i "s|AUTH_SECRET=.*|AUTH_SECRET=$(openssl rand -hex 32)|g" .env
+sed -i "s|CPF_PEPPER=.*|CPF_PEPPER=$(openssl rand -hex 32)|g" .env
+```
+
+Edite o arquivo `.env` (`nano .env`) e configure os parâmetros específicos do seu ambiente (ex: `APP_DOMAIN`, parâmetros do Active Directory/LDAP e e-mail do Let's Encrypt).
+
+#### 4. Inicializar os Serviços
+```bash
+docker compose up -d --build
+```
+
+O Docker Compose inicializará:
+1. `db`: Banco PostgreSQL 16 com volume persistente `db-data`.
+2. `minio`: Storage S3 com volume persistente `minio-data` e console visual na porta `9001`.
+3. `minio-init`: Inicializador automático que cria o bucket `fpone-files` como privado e encerra com código 0.
+4. `web`: Aplicação Next.js 16 standalone que executa migrações do Prisma automaticamente no startup.
+5. `proxy`: Traefik v3 roteando portas 80/443, emitindo certificados SSL e expondo dashboard na porta 8080.
+6. `backup`: Cron diário para dump do Postgres e sincronização S3 via rclone.
+
+---
+
+## 4. Gerenciamento e Operação da Stack
+
+### Verificar o Status dos Serviços
+```bash
+docker compose ps
+```
+
+### Visualizar Logs em Tempo Real
+```bash
+# Todos os serviços
+docker compose logs -f
+
+# Apenas a aplicação Web
+docker compose logs -f web
+
+# Apenas o Proxy Traefik
+docker compose logs -f proxy
+
+# Apenas o Storage MinIO
+docker compose logs -f minio
+```
+
+### Reiniciar ou Atualizar a Aplicação
+```bash
+# Atualizar código via Git e recriar o container web
+git pull origin main
+docker compose up -d --build web
+```
+
+### Operações Administrativas via Profile `tools`
+Para rodar comandos Prisma ou scripts administrativos sem instalar Node.js no host Debian:
+
+```bash
+# Aplicar novas migrações
+docker compose run --rm tools npm run db:deploy
+
+# Promover um colaborador por matrícula a Administrador
+docker compose run --rm tools npm run admin:bootstrap -- --matricula 000123
+
+# Executar backup imediatamente sob demanda
+docker compose exec backup /backup.sh --now
+```
+
+---
+
+## 5. Desenvolvimento e Validação Local
+
+Para executar o projeto localmente em máquina de desenvolvimento:
 
 ```bash
 # Instalar dependências
 npm.cmd install
 
-# Gerar o cliente Prisma
+# Gerar cliente Prisma
 npx.cmd prisma generate
 
-# Executar migrações locais
-npm.cmd run db:migrate
-
-# Executar bateria de 255 testes automatizados
+# Executar bateria de 255 testes automatizados (100% de sucesso)
 npm.cmd test
 
-# Validar tipagem estrita TypeScript
+# Validar tipagem estrita com TypeScript
 npm.cmd run typecheck
 
-# Iniciar servidor de desenvolvimento
+# Iniciar servidor local
 npm.cmd run dev
 ```
 
 ---
 
-## 4. Estrutura do Repositório
+## 6. Estrutura do Repositório
 
 ```text
 ├── .dockerignore
-├── .env.example
+├── .env.example                 # Modelo de configuração com Traefik e MinIO
 ├── .gitignore
+├── compose.yaml                 # Orquestração completa de produção (Traefik, MinIO, DB, Web)
 ├── Dockerfile                   # Build multi-stage standalone seguro
-├── docker-entrypoint.sh         # Migração automática no startup do Swarm
-├── easypanel.json               # Template oficial 1-click para Easypanel
-├── compose.yaml                 # Orquestração local / Docker Compose
-├── package.json
-├── tsconfig.json
+├── docker-entrypoint.sh         # Migração automática no startup
+├── docker/
+│   └── backup/                  # Rotina de backup diário Postgres + S3
+├── scripts/
+│   ├── setup-debian.sh          # Script de instalação automatizada para Debian Linux
+│   └── admin-bootstrap.ts       # Script CLI para promoção de administradores
 ├── prisma/
-│   ├── schema.prisma            # Schema de dados corporativo
-│   └── migrations/              # Migrações versionadas do banco
+│   ├── schema.prisma            # Schema relacional corporativo
+│   └── migrations/              # Migrações versionadas do banco de dados
 ├── src/
 │   ├── app/                     # Rotas do Next.js 16 (App Router)
 │   ├── components/              # Componentes de UI e Layout (ONE Design System)
@@ -191,5 +236,5 @@ npm.cmd run dev
 
 ---
 
-## 5. Licença e Uso
-Uso interno corporativo — Projeto FPOne Intranet.
+## 7. Licença e Uso
+Uso interno corporativo — Projeto FPOne Intranet (Fazenda Progresso).

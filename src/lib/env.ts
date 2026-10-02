@@ -15,12 +15,10 @@ const serverEnvSchema = z
     NODE_ENV: z.enum(["development", "test", "production"]).default("development"),
     DATABASE_URL: z.string().url(),
     /**
-     * Endpoint interno do Garage (ex.: http://garage:3900).
-     * MINIO_ENDPOINT é aceito como fallback para compatibilidade com ambientes que ainda
-     * usam a variável antiga.
+     * Endpoint interno do MinIO (ex.: http://minio:9000).
      */
-    GARAGE_ENDPOINT: z.string().url().optional(),
     MINIO_ENDPOINT: z.string().url().optional(),
+    GARAGE_ENDPOINT: z.string().url().optional(),
     /** Arquivos (§182, RN-DOC-007). Sem eles, upload e download de documentos ficam indisponíveis. */
     S3_BUCKET: optional,
     S3_ACCESS_KEY: optional,
@@ -37,11 +35,11 @@ const serverEnvSchema = z
     AD_ENABLED: flag,
   })
   .superRefine((data, ctx) => {
-    if (!data.GARAGE_ENDPOINT && !data.MINIO_ENDPOINT) {
+    if (!data.MINIO_ENDPOINT && !data.GARAGE_ENDPOINT) {
       ctx.addIssue({
         code: z.ZodIssueCode.custom,
-        message: "Exige pelo menos GARAGE_ENDPOINT ou MINIO_ENDPOINT",
-        path: ["GARAGE_ENDPOINT"],
+        message: "Exige pelo menos MINIO_ENDPOINT ou GARAGE_ENDPOINT",
+        path: ["MINIO_ENDPOINT"],
       });
     }
   });
@@ -63,7 +61,7 @@ export function serverEnv(): ServerEnv {
   if (process.env.NODE_ENV === "test") {
     cached ??= parseServerEnv({
       DATABASE_URL: "postgresql://placeholder:placeholder@localhost:5432/placeholder",
-      GARAGE_ENDPOINT: "http://garage:3900",
+      MINIO_ENDPOINT: "http://minio:9000",
       AUTH_SECRET: "0123456789abcdef0123456789abcdef",
       CPF_PEPPER: "0123456789abcdef0123456789abcdef",
       ...process.env,

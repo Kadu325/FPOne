@@ -7,7 +7,7 @@ vi.mock("@/server/db", () => ({
 
 vi.mock("@/lib/env", () => ({
   serverEnv: vi.fn(() => ({
-    GARAGE_ENDPOINT: "http://garage:3900",
+    MINIO_ENDPOINT: "http://minio:9000",
   })),
 }));
 
@@ -20,7 +20,7 @@ describe("Healthcheck Endpoint (GET /api/health) (§182)", () => {
     vi.restoreAllMocks();
   });
 
-  it("retorna HTTP 200 com status 'ok' quando banco e Garage S3 respondem normalmente", async () => {
+  it("retorna HTTP 200 com status 'ok' quando banco e MinIO S3 respondem normalmente", async () => {
     // DB mock saudável
     vi.mocked(db).mockReturnValue({
       $queryRaw: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
@@ -78,12 +78,12 @@ describe("Healthcheck Endpoint (GET /api/health) (§182)", () => {
     expect(rawResponse).not.toContain("5432");
   });
 
-  it("retorna HTTP 503 e status 'degraded' se o armazenamento Garage S3 estiver fora do ar", async () => {
+  it("retorna HTTP 503 e status 'degraded' se o armazenamento MinIO S3 estiver fora do ar", async () => {
     vi.mocked(db).mockReturnValue({
       $queryRaw: vi.fn().mockResolvedValue([{ "?column?": 1 }]),
     } as any);
 
-    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("connect ECONNREFUSED garage:3900"));
+    vi.spyOn(globalThis, "fetch").mockRejectedValue(new Error("connect ECONNREFUSED minio:9000"));
 
     const res = await GET();
 
